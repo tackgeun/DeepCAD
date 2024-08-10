@@ -15,6 +15,11 @@ class CADLoss(nn.Module):
 
         self.register_buffer("cmd_args_mask", torch.tensor(CMD_ARGS_MASK))
 
+        if cfg.pred_type == 'quantize':
+            self.loss_type = 'cross-entropy'
+        elif 'conv' in cfg.pred_type:
+            self.loss_type = 'l1-loss'
+
     def forward(self, output):
         # Target & predictions
         tgt_commands, tgt_args = output["tgt_commands"], output["tgt_args"]
@@ -27,7 +32,13 @@ class CADLoss(nn.Module):
         mask = self.cmd_args_mask[tgt_commands.long()]
 
         loss_cmd = F.cross_entropy(command_logits[padding_mask.bool()].reshape(-1, self.n_commands), tgt_commands[padding_mask.bool()].reshape(-1).long())
-        loss_args = F.cross_entropy(args_logits[mask.bool()].reshape(-1, self.args_dim), tgt_args[mask.bool()].reshape(-1).long() + 1)  # shift due to -1 PAD_VAL
+
+        if self.loss_type == 'cross-entropy':
+            loss_args = F.cross_entropy(args_logits[mask.bool()].reshape(-1, self.args_dim), tgt_args[mask.bool()].reshape(-1).long() + 1)  # shift due to -1 PAD_VAL
+        elif self.loss_type == 'l1-loss':
+            tgt_args_preprocessed = (tgt_args[mask.bool()].reshape(-1, 1) + 1)
+            args_logits_preprocessed = args_logits[mask.bool()].reshape(-1, 1)
+            loss_args = F.l1_loss(args_logits_preprocessed, tgt_args_preprocessed)  # shift due to -1 PAD_VAL
 
         loss_cmd = self.weights["loss_cmd_weight"] * loss_cmd
         loss_args = self.weights["loss_args_weight"] * loss_args

@@ -5,16 +5,50 @@ from .model_utils import _make_seq_first, _make_batch_first, \
     _get_padding_mask, _get_key_padding_mask, _get_group_mask
 
 
+class PositionalEncodingRFF(nn.Module):
+    def __init__(self, d_model, d_input=2, std_dev=2.0):
+        super(PositionalEncodingRFF, self).__init__()
+        frequency_matrix = torch.normal(mean=torch.zeros(d_input, d_model//2),
+                                        std=std_dev)        
+        self.register_buffer('frequency_matrix', frequency_matrix)
+
+    def forward(self, coordinates):
+        """Creates Fourier features from coordinates.
+
+        Args:
+            coordinates (torch.Tensor): Shape (num_points, coordinate_dim)
+        """
+        # The coordinates variable contains a batch of vectors of dimension
+        # coordinate_dim. We want to perform a matrix multiply of each of these
+        # vectors with the frequency matrix. I.e. given coordinates of
+        # shape (num_points, coordinate_dim) we perform a matrix multiply by
+        # the transposed frequency matrix of shape (coordinate_dim, num_frequencies)
+        # to obtain an output of shape (num_points, num_frequencies).
+        prefeatures = torch.matmul(coordinates, self.frequency_matrix)
+        # Calculate cosine and sine features
+        cos_features = torch.cos(2 * math.pi * prefeatures)
+        sin_features = torch.sin(2 * math.pi * prefeatures)
+        # Concatenate sine and cosine features
+        return torch.cat((cos_features, sin_features), dim=-1)  
+
+
 class CADEmbedding(nn.Module):
     """Embedding: positional embed + command embed + parameter embed + group embed (optional)"""
-    def __init__(self, cfg, seq_len, use_group=False, group_len=None):
+    def __init__(self, cfg, seq_len, use_group=False, group_len=None, embed_type='quantize'):
         super().__init__()
 
         self.command_embed = nn.Embedding(cfg.n_commands, cfg.d_model)
 
-        args_dim = cfg.args_dim + 1
-        self.arg_embed = nn.Embedding(args_dim, 64, padding_idx=0)
-        self.embed_fcn = nn.Linear(64 * cfg.n_args, cfg.d_model)
+        if embed_type == 'quantize':
+            self.embed_type = 'quantize'
+            args_dim = cfg.args_dim + 1
+            self.arg_embed = nn.Embedding(args_dim, 64, padding_idx=0)
+            self.embed_fcn = nn.Linear(64 * cfg.n_args, cfg.d_model)
+        elif 'rff1d' in embed_type:
+            self.embed_type = 'rff1d'
+            rff_std = float(embed_type.split('rff1d')[1])
+            self.arg_embed = PositionalEncodingRFF(64, d_input=1, std_dev=rff_std)
+            self.embed_fcn = nn.Linear(64 * cfg.n_args, cfg.d_model)
 
         # use_group: additional embedding for each sketch-extrusion pair
         self.use_group = use_group
@@ -28,8 +62,13 @@ class CADEmbedding(nn.Module):
     def forward(self, commands, args, groups=None):
         S, N = commands.shape
 
-        src = self.command_embed(commands.long()) + \
-              self.embed_fcn(self.arg_embed((args + 1).long()).view(S, N, -1))  # shift due to -1 PAD_VAL
+        if self.embed_type == 'quantize':
+            src = self.command_embed(commands.long()) + \
+                self.embed_fcn(self.arg_embed((args + 1).long()).view(S, N, -1))  # shift due to -1 PAD_VAL
+        elif 'rff1d' in self.embed_type:
+            args_preprocessed = (args.reshape(-1, 1) + 1).float()
+            src = self.command_embed(commands.long()) + \
+                self.embed_fcn(self.arg_embed(args_preprocessed).view(S, N, -1))  # shift due to -1 PAD_VAL
 
         if self.use_group:
             src = src + self.group_embed(groups.long())
@@ -61,7 +100,7 @@ class Encoder(nn.Module):
 
         seq_len = cfg.max_total_len
         self.use_group = cfg.use_group_emb
-        self.embedding = CADEmbedding(cfg, seq_len, use_group=self.use_group)
+        self.embedding = CADEmbedding(cfg, seq_len, use_group=self.use_group, embed_type=cfg.embed_type)
 
         encoder_layer = TransformerEncoderLayerImproved(cfg.d_model, cfg.n_heads, cfg.dim_feedforward, cfg.dropout)
         encoder_norm = LayerNorm(cfg.d_model)
@@ -80,7 +119,7 @@ class Encoder(nn.Module):
 
 
 class FCN(nn.Module):
-    def __init__(self, d_model, n_commands, n_args, args_dim=256):
+    def __init__(self, d_model, n_commands, n_args, args_dim=256, args_std=""):
         super().__init__()
 
         self.n_args = n_args
@@ -88,6 +127,14 @@ class FCN(nn.Module):
 
         self.command_fcn = nn.Linear(d_model, n_commands)
         self.args_fcn = nn.Linear(d_model, n_args * args_dim)
+        
+        if len(args_std) > 0:
+            if 'kaiming' in args_std:
+                print(f'use kaiming init on pred with std={float(self.args_fcn.weight.std())}.')
+                nn.init.kaiming_normal_(self.args_fcn.weight, mode="fan_in")
+            else:
+                nn.init.normal_(self.args_fcn.weight, std=float(args_std))
+                print(f'use normal init on pred with std={float(self.args_fcn.weight.std())}.')
 
     def forward(self, out):
         S, N, _ = out.shape
@@ -111,7 +158,11 @@ class Decoder(nn.Module):
         self.decoder = TransformerDecoder(decoder_layer, cfg.n_layers_decode, decoder_norm)
 
         args_dim = cfg.args_dim + 1
-        self.fcn = FCN(cfg.d_model, cfg.n_commands, cfg.n_args, args_dim)
+
+        if cfg.pred_type == 'quantize':
+            self.fcn = FCN(cfg.d_model, cfg.n_commands, cfg.n_args, args_dim)
+        elif 'conv' in cfg.pred_type:
+            self.fcn = FCN(cfg.d_model, cfg.n_commands, cfg.n_args, 1, cfg.pred_type.split('conv')[1])
 
     def forward(self, z):
         src = self.embedding(z)
@@ -145,6 +196,8 @@ class CADTransformer(nn.Module):
         self.bottleneck = Bottleneck(cfg)
 
         self.decoder = Decoder(cfg)
+        self.cfg = cfg
+
 
     def forward(self, commands_enc, args_enc,
                 z=None, return_tgt=True, encode_mode=False):

@@ -10,10 +10,10 @@ class ConfigAE(object):
     def __init__(self, phase):
         self.is_train = phase == "train"
 
-        self.set_configuration()
-
         # init hyperparameters and parse from command-line
         parser, args = self.parse()
+
+        self.set_configuration(args)
 
         # set as attributes
         print("----Experiment Configuration-----")
@@ -46,7 +46,7 @@ class ConfigAE(object):
             with open('{}/config.txt'.format(self.exp_dir), 'w') as f:
                 json.dump(args.__dict__, f, indent=2)
 
-    def set_configuration(self):
+    def set_configuration(self, args):
         self.args_dim = ARGS_DIM # 256
         self.n_args = N_ARGS
         self.n_commands = len(ALL_COMMANDS)  # line, arc, circle, EOS, SOS
@@ -59,6 +59,9 @@ class ConfigAE(object):
         self.dropout = 0.1                # Dropout rate used in basic layers and Transformers
         self.dim_z = 256                 # Latent vector dimensionality
         self.use_group_emb = True
+        
+        self.embed_type = args.embed_type #'quantize'
+        self.pred_type = args.pred_type #'quantize'
 
         self.max_n_ext = MAX_N_EXT
         self.max_n_loops = MAX_N_LOOPS
@@ -95,6 +98,9 @@ class ConfigAE(object):
         parser.add_argument('--val_frequency', type=int, default=10, help="run validation every x iterations")
         parser.add_argument('--vis_frequency', type=int, default=2000, help="visualize output every x iterations")
         parser.add_argument('--augment', action='store_true', help="use random data augmentation")
+
+        parser.add_argument('--embed_type', type=str, default="quantize", help="embed-type, quantize|rff1d")
+        parser.add_argument('--pred_type', type=str, default="quantize", help="pred-type, quantize|conv")
         
         if not self.is_train:
             parser.add_argument('-m', '--mode', type=str, choices=['rec', 'enc', 'dec'])

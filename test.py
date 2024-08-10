@@ -60,8 +60,10 @@ def reconstruct(cfg):
 
             save_path = os.path.join(cfg.outputs, '{}_vec.h5'.format(data_id))
             with h5py.File(save_path, 'w') as fp:
-                fp.create_dataset('out_vec', data=out_vec[:seq_len], dtype=np.int)
-                fp.create_dataset('gt_vec', data=gt_vec[j][:seq_len], dtype=np.int)
+                # fp.create_dataset('out_vec', data=out_vec[:seq_len], dtype=np.int)
+                # fp.create_dataset('gt_vec', data=gt_vec[j][:seq_len], dtype=np.int)
+                fp.create_dataset('out_vec', data=out_vec[:seq_len], dtype=np.float)
+                fp.create_dataset('gt_vec', data=gt_vec[j][:seq_len], dtype=np.float)
 
 
 def encode(cfg):

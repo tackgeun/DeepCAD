@@ -47,12 +47,19 @@ class TrainerAE(BaseTrainer):
     def logits2vec(self, outputs, refill_pad=True, to_numpy=True):
         """network outputs (logits) to final CAD vector"""
         out_command = torch.argmax(torch.softmax(outputs['command_logits'], dim=-1), dim=-1)  # (N, S)
-        out_args = torch.argmax(torch.softmax(outputs['args_logits'], dim=-1), dim=-1) - 1  # (N, S, N_ARGS)
+
+        if self.cfg.pred_type == 'quantize':
+            #import pdb; pdb.set_trace()
+            out_args = torch.argmax(torch.softmax(outputs['args_logits'], dim=-1), dim=-1) - 1  # (N, S, N_ARGS)
+        elif 'conv' in self.cfg.pred_type:
+            #import pdb; pdb.set_trace()
+            out_args = outputs['args_logits'].squeeze(3) - 1  # (N, S, N_ARGS)
+
         if refill_pad: # fill all unused element to -1
             mask = ~torch.tensor(CMD_ARGS_MASK).bool().cuda()[out_command.long()]
             out_args[mask] = -1
 
-        out_cad_vec = torch.cat([out_command.unsqueeze(-1), out_args], dim=-1)
+        out_cad_vec = torch.cat([out_command.unsqueeze(-1).float(), out_args.float()], dim=-1)
         if to_numpy:
             out_cad_vec = out_cad_vec.detach().cpu().numpy()
         return out_cad_vec
